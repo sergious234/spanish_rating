@@ -143,39 +143,6 @@ fn read_clans() -> Result<Vec<String>, std::io::Error> {
 use mysql::Pool;
 use mysql::{self, params, PooledConn};
 
-// Maria Stuff
-fn connect() -> mysql::PooledConn {
-    let url = "mysql://root:1234@localhost/clanes";
-    let pool = Pool::new(url).unwrap();
-    let mut conn = pool.get_conn().unwrap();
-
-    conn.query_map("SELECT * FROM CLANS", |(tag, rank)| {
-        let clan = ClanRating {
-            tag,
-            rank,
-            name: "".to_string(),
-            rank_delta: 0,
-        };
-        println!("{:?}", clan);
-    })
-    .ok();
-    conn
-}
-
-fn update_ranking(conn: &mut PooledConn, ratings: &[ClanRating]) {
-    let res = conn.exec_batch(
-        "UPDATE CLANS SET GLOBAL_RANK = :rank WHERE CLANS.tag = :tag;",
-        ratings.iter().map(|c| {
-            params! {
-                "rank" => c.rank,
-                "tag" => &c.tag
-            }
-        }),
-    );
-
-    println!("{:?}", res);
-}
-
 #[tokio::main]
 async fn main() {
     /*
