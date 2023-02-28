@@ -1,5 +1,8 @@
+use chrono::prelude::*;
+use mysql::prelude::Queryable;
 use serde::{Deserialize, Serialize};
-use std::{error::Error, io::Write};
+use std::error::Error;
+use std::io::{Write, BufRead};
 use tokio;
 
 static BASE_URL: &str  = "https://api.worldoftanks.eu/wot/globalmap/eventrating/?application_id=562a644f751f1c85ba948e29080f29e8&front_id=we_2023_bg&event_id=we_2023&limit=100&page_no=";
@@ -100,12 +103,14 @@ async fn get_event() -> Result<std::collections::HashMap<ClanRating, u32>, Box<d
     let mut ordered_clans = std::collections::HashMap::with_capacity(CLANS.len());
     let mut page = 1;
     let mut count = 100;
+    
+    let clans_names = read_clans().unwrap();
 
     while count != 0 {
         let url = BASE_URL.to_string() + &page.to_string();
         let response: FameRating = serde_json::from_str(&cliente.get(url).send().await?.text().await?)?;
         for clan in response.data.into_iter() {
-            if CLANS.iter().any(|c| *c == clan.tag) {
+            if clans_names.iter().any(|c| *c == clan.tag) {
                 let rank = clan.rank.clone();
                 ordered_clans.insert(clan, rank);
             }
@@ -117,15 +122,92 @@ async fn get_event() -> Result<std::collections::HashMap<ClanRating, u32>, Box<d
     return Ok(ordered_clans);
 }
 
+fn read_clans() -> Result<Vec<String>, std::io::Error> {
+    let mut clanes = Vec::new();
+
+    let mut reader = std::io::BufReader::new(std::fs::File::open("Listado.txt")?);
+    
+    let mut line = String::new();
+    reader.read_line(&mut line).ok();
+    while !line.is_empty() {
+        clanes.push(line.trim().to_string());
+        line.clear();
+        reader.read_line(&mut line).ok();
+    }
+
+
+    Ok(clanes)
+}
+
+//use mysql::prelude::*;
+use mysql::Pool;
+use mysql::{self, params, PooledConn};
+
+// Maria Stuff
+fn connect() -> mysql::PooledConn {
+    let url = "mysql://root:1234@localhost/clanes";
+    let pool = Pool::new(url).unwrap();
+    let mut conn = pool.get_conn().unwrap();
+
+    conn.query_map("SELECT * FROM CLANS", |(tag, rank)| {
+        let clan = ClanRating {
+            tag,
+            rank,
+            name: "".to_string(),
+            rank_delta: 0,
+        };
+        println!("{:?}", clan);
+    })
+    .ok();
+    conn
+}
+
+fn update_ranking(conn: &mut PooledConn, ratings: &[ClanRating]) {
+    let res = conn.exec_batch(
+        "UPDATE CLANS SET GLOBAL_RANK = :rank WHERE CLANS.tag = :tag;",
+        ratings.iter().map(|c| {
+            params! {
+                "rank" => c.rank,
+                "tag" => &c.tag
+            }
+        }),
+    );
+
+    println!("{:?}", res);
+}
+
 #[tokio::main]
 async fn main() {
+    /*
+    let mut conn = connect();
+    update_ranking(
+        &mut conn,
+        &[ClanRating {
+            tag: "BV_".to_owned(),
+            name: "Boinas Verdes".to_owned(),
+            rank: 830,
+            rank_delta: 30,
+        }],
+    );
+    */
+
     let clans = get_event().await.unwrap();
-    let mut file = std::io::BufWriter::new(std::fs::File::create("Clans.txt").unwrap());
+    let file_name = format!("Clans_{}.txt", Local::now().format("%H-%M_%d_%m"));
+    let mut file = std::io::BufWriter::new(std::fs::File::create(file_name).unwrap());
     let mut hash_vec: Vec<(&ClanRating, &u32)> = clans.iter().collect();
     hash_vec.sort_by(|a, b| a.1.cmp(b.1));
 
     for (i, (clan, rank)) in hash_vec.iter().enumerate() {
-        let a = format!("{} {}: {}\n", i + 1, clan.name, rank);
+        let delta = {
+            if clan.rank_delta > 0 {
+                format!("^{:>2}", clan.rank_delta.abs())
+            } else if clan.rank_delta < 0 {
+                format!("v{:>2}", clan.rank_delta.abs())
+            } else {
+                "- ".to_owned()
+            }
+        };
+        let a = format!("{:>2}    {} {}: {}\n", i + 1, delta, clan.name, rank);
         print!("{a}");
         file.write_all(a.as_bytes()).ok();
     }
